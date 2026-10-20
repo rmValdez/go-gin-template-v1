@@ -6,26 +6,36 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rmValdez/go-gin-template-v1/internal/domain/apperrors"
-	"github.com/rmValdez/go-gin-template-v1/internal/transport/http/response"
 	"github.com/rmValdez/go-gin-template-v1/internal/domain/services"
+	"github.com/rmValdez/go-gin-template-v1/internal/transport/http/response"
 )
+
+type CookieConfig struct {
+	Domain   string
+	Secure   bool
+	SameSite http.SameSite
+}
 
 type RegisterRequest struct {
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8"`
+	Password string `json:"password" binding:"required,min=8,max=72"`
 }
 
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required"`
+	Password string `json:"password" binding:"required,max=72"`
 }
 
 type AuthHandler struct {
 	authService services.AuthService
+	cookieCfg   CookieConfig
 }
 
-func NewAuthHandler(authService services.AuthService) *AuthHandler {
-	return &AuthHandler{authService: authService}
+func NewAuthHandler(authService services.AuthService, cookieCfg CookieConfig) *AuthHandler {
+	return &AuthHandler{
+		authService: authService,
+		cookieCfg:   cookieCfg,
+	}
 }
 
 func (h *AuthHandler) Register(c *gin.Context) {
@@ -72,9 +82,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Set the session cookie
-	// Secure should be true in production, false for local dev unless using HTTPS
-	c.SetCookie("session_token", token, 3600*24*7, "/", "", false, true)
+	// Set HttpOnly, Secure, SameSite session cookie
+	c.SetSameSite(h.cookieCfg.SameSite)
+	c.SetCookie("session_token", token, 3600*24*7, "/", h.cookieCfg.Domain, h.cookieCfg.Secure, true)
 
 	response.Success(c, http.StatusOK, gin.H{
 		"message": "Successfully logged in",
@@ -86,9 +96,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 }
 
 func (h *AuthHandler) Me(c *gin.Context) {
-	// Retrieved from the AuthRequired middleware
 	userID, _ := c.Get("userID")
-	
+
 	response.Success(c, http.StatusOK, gin.H{
 		"message": "You are authenticated!",
 		"userID":  userID,
@@ -98,14 +107,12 @@ func (h *AuthHandler) Me(c *gin.Context) {
 func (h *AuthHandler) Logout(c *gin.Context) {
 	token, err := c.Cookie("session_token")
 	if err == nil && token != "" {
-		// Attempt to delete the session from the database
-		// We ignore the error because if it fails or is already deleted, 
-		// we still want to clear the client's cookie.
 		_ = h.authService.Logout(token)
 	}
 
-	// Clear the cookie by setting MaxAge to -1
-	c.SetCookie("session_token", "", -1, "/", "", false, true)
+	// Clear the cookie
+	c.SetSameSite(h.cookieCfg.SameSite)
+	c.SetCookie("session_token", "", -1, "/", h.cookieCfg.Domain, h.cookieCfg.Secure, true)
 
 	response.Success(c, http.StatusOK, gin.H{
 		"message": "Successfully logged out",

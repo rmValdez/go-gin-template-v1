@@ -26,15 +26,16 @@ func main() {
 	// Connect to Redis
 	redis.Connect(cfg.RedisURL)
 
-	// Connect to Database
+	// Connect to Database (exits if unavailable)
 	database.Connect(cfg.DatabaseURL)
-	if database.DB != nil {
-		// Run auto-migrations (Prisma migrate equivalent)
-		database.DB.AutoMigrate(
-			&models.User{},
-			&models.Account{},
-			&models.Session{},
-		)
+
+	// Run auto-migrations (Prisma migrate equivalent)
+	if err := database.DB.AutoMigrate(
+		&models.User{},
+		&models.Account{},
+		&models.Session{},
+	); err != nil {
+		log.Fatalf("Database migration failed: %v", err)
 	}
 
 	gin.SetMode(cfg.GinMode)
@@ -48,18 +49,29 @@ func main() {
 	// Add our custom middlewares
 	router.Use(middleware.ErrorHandler())
 	router.Use(middleware.RequestID())
-	router.Use(middleware.Cors())
+	router.Use(middleware.BodySizeLimit(2 << 20)) // 2 MB max body size
+	router.Use(middleware.Cors(cfg.AllowedOrigins))
 	
 	// Apply a global rate limit (e.g., 100 requests per minute per IP)
-	router.Use(middleware.RateLimiter(100, time.Minute))
+	router.Use(middleware.RateLimiter("global", 100, time.Minute))
 
-	_ = router.SetTrustedProxies(nil)
+	if len(cfg.TrustedProxies) > 0 {
+		if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+			log.Printf("Warning: failed to set trusted proxies: %v", err)
+		}
+	} else {
+		_ = router.SetTrustedProxies(nil)
+	}
 
-	routes.Register(router)
+	routes.Register(router, cfg)
 
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: router,
+		Addr:              ":" + cfg.Port,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Initializing the server in a goroutine so that
@@ -89,6 +101,12 @@ func main() {
 		} else {
 			log.Println("Redis connection closed")
 		}
+	}
+
+	if err := database.Close(); err != nil {
+		log.Printf("Error closing database connection: %v\n", err)
+	} else {
+		log.Println("Database connection closed")
 	}
 
 	log.Println("Server exiting")

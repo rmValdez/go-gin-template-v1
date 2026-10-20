@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   api:
     build: .
@@ -8,10 +6,13 @@ services:
     environment:
       - PORT=8080
       - GIN_MODE=debug
-      # Connect to the db service locally
+      # Connect to the db/redis services by their compose service names
       - DATABASE_URL=host=db user=postgres password=postgres dbname=postgres port=5432 sslmode=disable
+      - REDIS_URL=redis:6379
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     # Optional: mount .env if you want to override env vars locally
     # volumes:
@@ -37,6 +38,11 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
