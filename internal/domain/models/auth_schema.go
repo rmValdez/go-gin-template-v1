@@ -20,8 +20,8 @@ type Account struct {
 	User              User      `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 	Provider          string    `gorm:"not null;index" json:"provider"`
 	ProviderAccountID string    `gorm:"not null;index" json:"provider_account_id"`
-	RefreshToken      *string   `json:"refresh_token"`
-	AccessToken       *string   `json:"access_token"`
+	RefreshToken      *string   `json:"-"`
+	AccessToken       *string   `json:"-"`
 	ExpiresAt         *int64    `json:"expires_at"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
@@ -30,7 +30,7 @@ type Account struct {
 // Session represents an active user session in the database.
 type Session struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
-	SessionToken string    `gorm:"uniqueIndex;not null" json:"session_token"`
+	SessionToken string    `gorm:"uniqueIndex;not null" json:"-"`
 	UserID       uint      `gorm:"not null;index" json:"user_id"`
 	User         User      `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 	ExpiresAt    time.Time `gorm:"not null" json:"expires_at"`

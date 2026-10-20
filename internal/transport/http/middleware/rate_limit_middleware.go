@@ -2,43 +2,64 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rmValdez/go-gin-template-v1/internal/transport/http/response"
+	"github.com/redis/go-redis/v9"
 	infraredis "github.com/rmValdez/go-gin-template-v1/internal/infrastructure/redis"
+	"github.com/rmValdez/go-gin-template-v1/internal/transport/http/response"
 )
 
-// RateLimiter returns a middleware that limits requests by IP address using Redis.
-// limit is the maximum number of requests allowed within the window.
-func RateLimiter(limit int, window time.Duration) gin.HandlerFunc {
+// rateLimitScript atomically increments a counter and sets expiry if it's new
+var rateLimitScript = redis.NewScript(`
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+    redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return current
+`)
+
+// RateLimiter returns a middleware that limits requests by IP address using Redis atomically.
+func RateLimiter(prefix string, limit int, window time.Duration) gin.HandlerFunc {
+	windowMs := window.Milliseconds()
+
 	return func(c *gin.Context) {
-		// If Redis is not connected (e.g., during tests or if it failed), skip rate limiting
 		if infraredis.Client == nil {
 			c.Next()
 			return
 		}
 
 		clientIP := c.ClientIP()
-		key := "rate_limit:" + clientIP
+		key := fmt.Sprintf("rate_limit:%s:%s", prefix, clientIP)
 
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 500*time.Millisecond)
+		defer cancel()
 
-		// Increment the counter for this IP
-		count, err := infraredis.Client.Incr(ctx, key).Result()
+		result, err := rateLimitScript.Run(ctx, infraredis.Client, []string{key}, windowMs).Result()
 		if err != nil {
-			// On Redis error, just log and allow to prevent blocking users due to cache failure
+			// On Redis error or timeout, fail open to avoid service outage
 			c.Next()
 			return
 		}
 
-		// Set expiration on the very first request in the window
-		if count == 1 {
-			infraredis.Client.Expire(ctx, key, window)
+		count, ok := result.(int64)
+		if !ok {
+			c.Next()
+			return
 		}
 
+		remaining := int64(limit) - count
+		if remaining < 0 {
+			remaining = 0
+		}
+		c.Header("X-RateLimit-Limit", strconv.Itoa(limit))
+		c.Header("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
+
 		if count > int64(limit) {
+			c.Header("Retry-After", strconv.Itoa(int(window.Seconds())))
 			response.Error(c, http.StatusTooManyRequests, "Too many requests. Please try again later.")
 			c.Abort()
 			return

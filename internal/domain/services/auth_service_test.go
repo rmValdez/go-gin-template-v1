@@ -6,6 +6,7 @@ import (
 	"github.com/rmValdez/go-gin-template-v1/internal/domain/apperrors"
 	"github.com/rmValdez/go-gin-template-v1/internal/domain/models"
 	"github.com/rmValdez/go-gin-template-v1/internal/domain/services"
+	"github.com/rmValdez/go-gin-template-v1/internal/infrastructure/security"
 )
 
 // --- Mock User Repository ---
@@ -108,8 +109,8 @@ func TestLogin(t *testing.T) {
 			t.Errorf("Expected email to be login@example.com, got %s", user.Email)
 		}
 
-		// Verify session was stored in DB
-		session, _ := mockSessionRepo.FindByToken(token)
+		// Verify session was stored in DB (hashed)
+		session, _ := mockSessionRepo.FindByToken(security.HashToken(token))
 		if session == nil {
 			t.Errorf("Expected session to be stored in mock repository")
 		}
@@ -141,7 +142,7 @@ func TestLogout(t *testing.T) {
 		}
 
 		// Verify session was deleted
-		session, _ := mockSessionRepo.FindByToken(token)
+		session, _ := mockSessionRepo.FindByToken(security.HashToken(token))
 		if session != nil {
 			t.Errorf("Expected session to be deleted, but it still exists")
 		}

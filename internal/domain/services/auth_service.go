@@ -1,16 +1,13 @@
 package services
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
+	"strings"
 	"time"
 
 	"github.com/rmValdez/go-gin-template-v1/internal/domain/apperrors"
 	"github.com/rmValdez/go-gin-template-v1/internal/domain/models"
 	"github.com/rmValdez/go-gin-template-v1/internal/domain/repositories"
 	"github.com/rmValdez/go-gin-template-v1/internal/infrastructure/security"
-	"gorm.io/gorm"
 )
 
 type AuthService interface {
@@ -32,6 +29,9 @@ func NewAuthService(userRepo repositories.UserRepository, sessionRepo repositori
 }
 
 func (s *authService) Register(email, password string) (*models.User, error) {
+	// Normalize email to prevent whitespace and case-sensitive duplicate accounts
+	email = strings.ToLower(strings.TrimSpace(email))
+
 	// Check if user already exists
 	existingUser, _ := s.userRepo.FindByEmail(email)
 	if existingUser != nil {
@@ -41,6 +41,9 @@ func (s *authService) Register(email, password string) (*models.User, error) {
 	// Hash password
 	hashedPassword, err := security.HashPassword(password)
 	if err != nil {
+		if err == security.ErrPasswordTooLong {
+			return nil, apperrors.ErrInvalidCredentials
+		}
 		return nil, apperrors.ErrInternalServer
 	}
 
@@ -59,13 +62,15 @@ func (s *authService) Register(email, password string) (*models.User, error) {
 }
 
 func (s *authService) Login(email, password string) (string, *models.User, error) {
-	// 1. Fetch user through the repository interface
+	// Normalize email
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	// 1. Fetch user through repository
 	user, err := s.userRepo.FindByEmail(email)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", nil, apperrors.ErrInvalidCredentials
-		}
-		return "", nil, err
+	if err != nil || user == nil {
+		// Run dummy password check to defend against timing-based user enumeration attacks
+		_ = security.CheckPassword(password, security.DummyHash)
+		return "", nil, apperrors.ErrInvalidCredentials
 	}
 
 	// 2. Verify password logic (business rule)
@@ -74,15 +79,15 @@ func (s *authService) Login(email, password string) (string, *models.User, error
 	}
 
 	// 3. Generate Secure Session Token
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
+	rawToken, err := security.GenerateRandomToken(32)
+	if err != nil {
 		return "", nil, apperrors.ErrInternalServer
 	}
-	sessionToken := hex.EncodeToString(bytes)
 
-	// 4. Save Session to Database
+	// 4. Save SHA-256 Hashed Session Token to Database
+	hashedToken := security.HashToken(rawToken)
 	session := &models.Session{
-		SessionToken: sessionToken,
+		SessionToken: hashedToken,
 		UserID:       user.ID,
 		ExpiresAt:    time.Now().Add(24 * time.Hour * 7), // 7 days
 	}
@@ -90,12 +95,12 @@ func (s *authService) Login(email, password string) (string, *models.User, error
 		return "", nil, apperrors.ErrInternalServer
 	}
 
-	return sessionToken, user, nil
+	return rawToken, user, nil
 }
 
 func (s *authService) Logout(sessionToken string) error {
-	// Delete the session from the database
-	if err := s.sessionRepo.DeleteByToken(sessionToken); err != nil {
+	hashedToken := security.HashToken(sessionToken)
+	if err := s.sessionRepo.DeleteByToken(hashedToken); err != nil {
 		return apperrors.ErrInternalServer
 	}
 	return nil
